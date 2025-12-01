@@ -363,7 +363,8 @@ void bleTask(void* pvParameters) {
 }
 
 extern "C" void app_main() {
-
+    //TODO: Implementar DeviceConfig
+    //TODO: Enviar la hora al cliente BLE cuando se conecte y ha pasado un día
     brainLED = new RGB(255, 255, 255);
     esp_err_t err = brainLED->init();
     if (err) {
