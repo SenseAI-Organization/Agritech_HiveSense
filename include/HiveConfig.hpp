@@ -13,8 +13,8 @@ const char* AWS_ClientCertificate = "SenseS.pem";
 const char* AWS_ClientKey = "private.pem";
 const char* THINGNAME = "BeeSense_Device";
 const char* mqttCmdTopic = "cmd";
-const char* mqttUpdateTopic = "ota/firmware";
-const char* mqttFeedbackTopic = "ota/feedback";
+const char* mqttUpdateTopic = "sense/dev/HIVEota/firmware";
+const char* mqttFeedbackTopic = "sense/dev/HIVEota/feedback";
 const char* mqttDataTopic = "sense/dev/HIVE";
 const char* deviceID = "HIVE_TEST";
 
