@@ -33,4 +33,5 @@ constexpr gpio_num_t kCsPin = GPIO_NUM_39;
 constexpr gpio_num_t kSclPin = GPIO_NUM_12;
 constexpr gpio_num_t kMosiPin = GPIO_NUM_11;
 constexpr gpio_num_t kMisoPin = GPIO_NUM_13;
+constexpr gpio_num_t kLedPin = GPIO_NUM_2; // Pin para el LED RGB del cerebro
 

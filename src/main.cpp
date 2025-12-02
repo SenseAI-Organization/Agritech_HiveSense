@@ -44,20 +44,16 @@ TaskHandle_t sdTaskHandle = nullptr;
 
 // Función para obtener el nombre del archivo basado en la fecha actual
 std::string getDateBasedFilename(const char* prefix) {
-    time_t now;
-    struct tm timeinfo;
-    char buffer[64];
+    char timeBuffer[32];
+    //TODO: Time synchronization debe ser en UNIX
+    if (wifiHandler->getCurrentTime(timeBuffer, sizeof(timeBuffer)) == ESP_OK) {
+        ESP_LOGI(TAG, "Current Time: %s", timeBuffer);
+    } else {
+        ESP_LOGE(TAG, "Failed to get current time");
+        strcpy(timeBuffer, "12012025T");
+    }
     
-    time(&now);
-    localtime_r(&now, &timeinfo);
-    
-    snprintf(buffer, sizeof(buffer), "%s_%04d-%02d-%02d.txt", 
-             prefix,
-             timeinfo.tm_year + 1900,
-             timeinfo.tm_mon + 1,
-             timeinfo.tm_mday);
-    
-    return std::string(buffer);
+    return std::string(timeBuffer);
 }
 
 // Función auxiliar mejorada para escribir en SD con mutex
@@ -153,7 +149,7 @@ void sdCardTask(void* pvParameters) {
         
         // Éxito!
         std::string currentPath = sdCard->getCurrentDir();
-        ESP_LOGI(TAG, "✓ SD Card mounted successfully at: %s", currentPath.c_str());
+        ESP_LOGI(TAG, " SD Card mounted successfully at: %s", currentPath.c_str());
         
         initialized = true;
         sdCardReady = true;
@@ -336,36 +332,86 @@ void bleTask(void* pvParameters) {
             }
         }
 
-        if (loopCount % 30 == 0) {
-            bleServerStats_t stats = globalServer->getStats();
+        if (loopCount % 10 == 0) {
             
-            ESP_LOGI(TAG, "===============================================");
-            ESP_LOGI(TAG, " SERVER STATUS REPORT - Loop %d", loopCount);
-            ESP_LOGI(TAG, "===============================================");
-            ESP_LOGI(TAG, "   State: %s", globalServer->kgetStateString());
-            ESP_LOGI(TAG, "   Clients connected: %d/%d", (int)status.connectedClients, 4);
-            ESP_LOGI(TAG, "    Advertising: %s", status.advertisingActive ? " ACTIVE" : " INACTIVE");
-            ESP_LOGI(TAG, "   Total connections: %lu", stats.totalConnections);
-            ESP_LOGI(TAG, "   Data sent: %lu | Data received: %lu", stats.dataSent, stats.dataReceived);
-            ESP_LOGI(TAG, "   Uptime: %llu seconds", ble->getUptime()/1000);
-            ESP_LOGI(TAG, "   Free memory: %lu bytes", esp_get_free_heap_size());
-            ESP_LOGI(TAG, "===============================================");
-            
-            // REDUCIR EL TAMAÑO PARA EVITAR EL WARNING DE BLE
-            char status_data[20]; // 20 bytes máximo para BLE
-            snprintf(status_data, sizeof(status_data), "UP:%d C:%d", 
-                    (int)(ble->getUptime()/1000000), (int)status.connectedClients);
-            globalServer->setCustomData(status_data);
+            if (globalServer->hasConnectedClients()) {
+                char timeBuffer[128];
+                if (wifiHandler->getCurrentTime(timeBuffer, sizeof(timeBuffer)) == ESP_OK) {
+                    ESP_LOGI(TAG, "Current Time: %s", timeBuffer);
+                } else {
+                    ESP_LOGE(TAG, "Failed to get current time");
+                }
+                
+                // snprintf(timeBuffer, sizeof(timeBuffer), "{\"cmd\":\"syncT\",\"ts\":%lld}", 
+                //      (long long)time(NULL));
+                snprintf(timeBuffer, sizeof(timeBuffer), "{\"a\":1}");
+                esp_err_t notifyErr = globalServer->notifyAllClients();
+                if (notifyErr == ESP_OK) {
+                    ESP_LOGI(TAG, " Sent time sync to clients: %s", timeBuffer);
+                } else {
+                    ESP_LOGE(TAG, " Failed to send time sync: %s", esp_err_to_name(notifyErr));
+                }
+            }
         }
         
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
+static esp_err_t synchroTime(WifiHandler* wifiHandler, int maxAttempts = 5) {
+    
+    if (!wifiHandler) {
+        printf("No WiFi handler available for time sync\n");
+        return ESP_FAIL;
+    }
+    
+    printf("Starting NTP synchronization (%d attempts max)...\n", maxAttempts);
+    wifiHandler->syncTime();
+    vTaskDelay(pdMS_TO_TICKS(3000));
+    
+    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+        // Check for reed interrupt during sync
+        
+        char timeBuffer[64];
+        printf("Time sync attempt %d/%d...\n", attempt, maxAttempts);
+        
+        if (wifiHandler->getCurrentTime(timeBuffer, sizeof(timeBuffer)) == ESP_OK) {
+            printf("Time retrieved: %s\n", timeBuffer);
+            
+            int day, month, year, hour, min, sec;
+            if (sscanf(timeBuffer, "%d/%d/%d-%d:%d:%d", &day, &month, &year, &hour, &min, &sec) == 6) {
+                struct tm tm_time = {};
+                tm_time.tm_mday = day;
+                tm_time.tm_mon = month - 1;
+                tm_time.tm_year = year - 1900;
+                tm_time.tm_hour = hour;
+                tm_time.tm_min = min;
+                tm_time.tm_sec = sec;
+                tm_time.tm_isdst = -1;
+                
+                time_t wifiUnixTime = mktime(&tm_time);
+  
+            } else {
+                printf("Failed to parse time string: %s\n", timeBuffer);
+            }
+        } else {
+            printf("Time sync attempt %d failed\n", attempt);
+        }
+        
+        if (attempt < maxAttempts) {
+            vTaskDelay(pdMS_TO_TICKS(2000));
+        }
+    }
+    
+    printf("Failed to synchronize RTC after %d attempts\n", maxAttempts);
+    return ESP_FAIL;
+}
+
 extern "C" void app_main() {
     //TODO: Implementar DeviceConfig
+    //TODO: cORREGIR ntp trouble
     //TODO: Enviar la hora al cliente BLE cuando se conecte y ha pasado un día
-    brainLED = new RGB(255, 255, 255);
+    brainLED = new RGB(kLedPin,255, 255, 255);
     esp_err_t err = brainLED->init();
     if (err) {
         printf("LED couldn't be initialized.\n");
@@ -396,38 +442,19 @@ extern "C" void app_main() {
 
     if (wifiHandler->connectWifi() != ESP_OK) {
         ESP_LOGE(TAG, "Failed to connect to WiFi.");
-        return;
+        // return;
     }
 
     ESP_LOGI(TAG, "Connected to WiFi!");
-    
-    // Configurar SNTP para sincronización de tiempo
-    ESP_LOGI(TAG, "Initializing SNTP...");
-    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    esp_sntp_setservername(0, "pool.ntp.org");
-    esp_sntp_init();
-    
-    // Esperar a que el tiempo se sincronice
-    int retry = 0;
-    const int retry_count = 10;
-    
-    while (sntp_get_sync_status() == SNTP_SYNC_STATUS_RESET && ++retry < retry_count) {
-        ESP_LOGI(TAG, "Waiting for system time to be set... (%d/%d)", retry, retry_count);
-        vTaskDelay(pdMS_TO_TICKS(2000));
+
+    // Synchronize time
+    ret = synchroTime(wifiHandler, 5);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to synchronize time: %s", esp_err_to_name(ret));
+        // return;
     }
-    
-    time_t now;
-    time(&now);
-    struct tm *timeinfo_ptr = localtime(&now);
-    struct tm timeinfo = *timeinfo_ptr;
-    
-    if (timeinfo.tm_year > (2023 - 1900)) {
-        ESP_LOGI(TAG, "Time synchronized: %04d-%02d-%02d %02d:%02d:%02d",
-                 timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
-                 timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
-    } else {
-        ESP_LOGW(TAG, "Time not synchronized, using default time");
-    }
+
+    // ESP_LOGI(TAG, "Synchronized time!");
     
     awsHelper = new awsHandler(*wifiHandler);
 
@@ -438,14 +465,7 @@ extern "C" void app_main() {
 
     // Crear tarea dedicada para SD Card con manejo robusto de errores
     BaseType_t sdTaskCreated = xTaskCreatePinnedToCore(
-        sdCardTask,
-        "SD_Card_Task",
-        8192,  // 8KB stack
-        NULL,
-        6,     // Alta prioridad
-        &sdTaskHandle,
-        1      // Core 1 (mismo que WiFi/AWS)
-    );
+        sdCardTask,"SDTask",8192,NULL,6,&sdTaskHandle,1 );
     
     if (sdTaskCreated != pdPASS) {
         ESP_LOGE(TAG, "Failed to create SD Card task");
