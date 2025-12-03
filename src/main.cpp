@@ -44,16 +44,21 @@ TaskHandle_t sdTaskHandle = nullptr;
 
 // Función para obtener el nombre del archivo basado en la fecha actual
 std::string getDateBasedFilename(const char* prefix) {
-    char timeBuffer[32];
     //TODO: Time synchronization debe ser en UNIX
-    if (wifiHandler->getCurrentTime(timeBuffer, sizeof(timeBuffer)) == ESP_OK) {
-        ESP_LOGI(TAG, "Current Time: %s", timeBuffer);
-    } else {
-        ESP_LOGE(TAG, "Failed to get current time");
-        strcpy(timeBuffer, "12012025T");
-    }
+    time_t now;
+    struct tm timeinfo;
+    char buffer[64];
     
-    return std::string(timeBuffer);
+    time(&now);
+    localtime_r(&now, &timeinfo);
+    
+    snprintf(buffer, sizeof(buffer), "%s_%04d-%02d-%02d.txt", 
+             prefix,
+             timeinfo.tm_year + 1900,
+             timeinfo.tm_mon + 1,
+             timeinfo.tm_mday);
+    
+    return std::string(buffer);
 }
 
 // Función auxiliar mejorada para escribir en SD con mutex
@@ -342,14 +347,25 @@ void bleTask(void* pvParameters) {
                     ESP_LOGE(TAG, "Failed to get current time");
                 }
                 
-                // snprintf(timeBuffer, sizeof(timeBuffer), "{\"cmd\":\"syncT\",\"ts\":%lld}", 
-                //      (long long)time(NULL));
-                snprintf(timeBuffer, sizeof(timeBuffer), "{\"a\":1}");
-                esp_err_t notifyErr = globalServer->notifyAllClients();
-                if (notifyErr == ESP_OK) {
-                    ESP_LOGI(TAG, " Sent time sync to clients: %s", timeBuffer);
-                } else {
-                    ESP_LOGE(TAG, " Failed to send time sync: %s", esp_err_to_name(notifyErr));
+                char jsonData[64];
+                snprintf(jsonData, sizeof(jsonData), "{\"a\":1}");
+                
+                // MÉTODO 1: Configurar datos en custom y notificar
+                esp_err_t setResult = globalServer->setCustomData(jsonData);
+                ESP_LOGI(TAG, "setCustomData resultado: %s", esp_err_to_name(setResult));
+                
+                if (setResult == ESP_OK) {
+                    // Obtener todas las sesiones de clientes
+                    bleClientSession_t sessions[4];
+                    uint8_t sessionCount = globalServer->getAllClientSessions(sessions, 4);
+                    
+                    for (uint8_t i = 0; i < sessionCount; i++) {
+                        if (sessions[i].connID != 0) {
+                            ESP_LOGI(TAG, "Notificando cliente %d con custom data", sessions[i].connID);
+                            esp_err_t result = globalServer->notifyClient(sessions[i].connID, "custom");
+                            ESP_LOGI(TAG, "notifyClient custom resultado: %s", esp_err_to_name(result));
+                        }
+                    }
                 }
             }
         }
