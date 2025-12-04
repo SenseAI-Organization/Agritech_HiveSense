@@ -572,12 +572,11 @@ extern "C" void app_main() {
             ESP_LOGI(TAG, " Client %d data received (%d bytes)", connID, length);
             
             // Send immediate acknowledgment to client
-            char ackResponse[256];
-            uint64_t timestamp = esp_timer_get_time();
+            char ackResponse[205];
             snprintf(ackResponse, sizeof(ackResponse), 
-                     "{\"status\":\"received\",\"connID\":%d,\"length\":%d,\"timestamp\":%llu}", 
-                     connID, length, timestamp);
-            
+                     "{\"status\":\"received\",\"connID\":%d,\"length\":%d}", 
+                     connID, length);
+            printf("ACK Response: %s\n", ackResponse);
             esp_err_t ack_result = globalServer->sendJsonResponse(connID, ackResponse);
             if (ack_result == ESP_OK) {
                 ESP_LOGI(TAG, "Acknowledgment sent to client %d", connID);
@@ -585,7 +584,7 @@ extern "C" void app_main() {
                 ESP_LOGW(TAG, "Failed to send acknowledgment to client %d: %s", connID, esp_err_to_name(ack_result));
             }
             
-            if (length > 0 && length < 256) {
+            if (length > 0 && length < 205) {
                 // Solo preparar el mensaje y enviarlo a la cola
                 // La escritura en SD se hace en la tarea WiFi/AWS para no bloquear el callback
                 if(brainLED != nullptr){
@@ -609,6 +608,7 @@ extern "C" void app_main() {
                     snprintf(ackResponse, sizeof(ackResponse), 
                              "{\"status\":\"warning\",\"reason\":\"queue_full\",\"connID\":%d}", 
                              connID);
+                    printf("ACK Response: %s\n", ackResponse);
                     globalServer->sendJsonResponse(connID, ackResponse);
                 }
             } else {
@@ -618,6 +618,7 @@ extern "C" void app_main() {
                 snprintf(ackResponse, sizeof(ackResponse), 
                          "{\"status\":\"error\",\"reason\":\"invalid_length\",\"connID\":%d,\"length\":%d}", 
                          connID, length);
+                printf("ACK Response: %s\n", ackResponse);
                 globalServer->sendJsonResponse(connID, ackResponse);
             }
         });
