@@ -571,6 +571,20 @@ extern "C" void app_main() {
         server->setDataWrittenCallback([](uint16_t connID, const uint8_t* data, uint16_t length) {
             ESP_LOGI(TAG, " Client %d data received (%d bytes)", connID, length);
             
+            // Send immediate acknowledgment to client
+            char ackResponse[256];
+            uint64_t timestamp = esp_timer_get_time();
+            snprintf(ackResponse, sizeof(ackResponse), 
+                     "{\"status\":\"received\",\"connID\":%d,\"length\":%d,\"timestamp\":%llu}", 
+                     connID, length, timestamp);
+            
+            esp_err_t ack_result = globalServer->sendJsonResponse(connID, ackResponse);
+            if (ack_result == ESP_OK) {
+                ESP_LOGI(TAG, "Acknowledgment sent to client %d", connID);
+            } else {
+                ESP_LOGW(TAG, "Failed to send acknowledgment to client %d: %s", connID, esp_err_to_name(ack_result));
+            }
+            
             if (length > 0 && length < 256) {
                 // Solo preparar el mensaje y enviarlo a la cola
                 // La escritura en SD se hace en la tarea WiFi/AWS para no bloquear el callback
@@ -590,7 +604,21 @@ extern "C" void app_main() {
                 
                 if (xQueueSend(dataQueue, &msg, 0) != pdTRUE) {
                     ESP_LOGW(TAG, "Queue full, data dropped");
+                    
+                    // Send error acknowledgment for queue full
+                    snprintf(ackResponse, sizeof(ackResponse), 
+                             "{\"status\":\"warning\",\"reason\":\"queue_full\",\"connID\":%d}", 
+                             connID);
+                    globalServer->sendJsonResponse(connID, ackResponse);
                 }
+            } else {
+                ESP_LOGW(TAG, "Data length invalid: %d bytes", length);
+                
+                // Send error acknowledgment for invalid data size
+                snprintf(ackResponse, sizeof(ackResponse), 
+                         "{\"status\":\"error\",\"reason\":\"invalid_length\",\"connID\":%d,\"length\":%d}", 
+                         connID, length);
+                globalServer->sendJsonResponse(connID, ackResponse);
             }
         });
 
