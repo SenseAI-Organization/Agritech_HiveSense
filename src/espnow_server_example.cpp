@@ -1,8 +1,9 @@
 /*******************************************************************************
  * @file espnow_server_example.cpp
- * @brief EspNowServer gateway demo (ESP-NOW v2 large payload RX).
+ * @brief EspNowServer gateway demo: bridges received ESP-NOW payloads to MQTT
+ *        over TLS (ESP-NOW v2 large payload RX). Pairing window 60 s.
  *
- * Stack: 8192 bytes (required for v2). Pairing window 60 s.
+ * Stack: 8192 bytes (required for v2 + MQTT TLS in the same task).
  * Flash as server on /dev/ttyUSB0 (MAC F0:9E:9E:23:4B:3C).
  *
  * Flow diagram: examples/diagrams/espnow_server_example.mmd
@@ -20,26 +21,48 @@
 #include "espnow_server_sense.hpp"
 #include "flash_sense.hpp"
 #include "wifi_sense.hpp"
+#include "mqtt_sense.hpp"
+#include "HiveConfig.hpp"
 
 static const char* TAG = "espnow_gw_ex";
 
-static constexpr uint8_t kChannel = 1;
-static constexpr uint32_t kTaskStack = 8192;
-static constexpr UBaseType_t kTaskPrio = 5;
 static constexpr size_t kPrefixLogLen = 64;
+static constexpr uint32_t kPublishAckMs = 5000;
+static constexpr uint16_t kBrokerPort = 8883;
+static constexpr uint32_t kAppTaskStackBytes = 8192;
+static constexpr UBaseType_t kAppTaskPriority = 5;
+static constexpr BaseType_t kAppTaskCore = tskNO_AFFINITY;
 
 static void logMac(const char* p_label, const uint8_t* p_mac) {
     ESP_LOGI(TAG, "%s %02X:%02X:%02X:%02X:%02X:%02X", p_label, p_mac[0], p_mac[1],
              p_mac[2], p_mac[3], p_mac[4], p_mac[5]);
 }
 
-static void gatewayTask(void* /*p_arg*/) {
-    ESP_LOGI(TAG, "EspNowServer example (gateway, ESP-NOW v2)");
+static bool configLooksUnset(void) {
+    return (std::strcmp(kWifiSsid, "YOUR_WIFI_SSID") == 0) ||
+           (std::strcmp(kWifiPassword, "YOUR_WIFI_PASSWORD") == 0) ||
+           (std::strstr(kBrokerHost, "YOUR_ENDPOINT") != nullptr) ||
+           (std::strcmp(kThingName, "YOUR_THING_NAME") == 0);
+}
 
+
+static void gatewayTask(void* /*p_arg*/) {
+    ESP_LOGI(TAG, "EspNowServer example (gateway, ESP-NOW v2 -> MQTT bridge)");
+
+    if (configLooksUnset()) {
+        ESP_LOGE(TAG, "Edit CONFIG block: Wi-Fi, broker, clientId");
+        while (true) {
+            vTaskDelay(pdMS_TO_TICKS(10000));
+        }
+    }
+
+    // ESP-NOW must reuse the AP's channel once STA is associated, so connect
+    // to the AP (for MQTT) before starting the ESP-NOW server; never setChannel().
     Wifi::Config wifiCfg;
     wifiCfg.mode = Wifi::Mode::kStation;
-    wifiCfg.powerSave = Wifi::PowerSave::kNone;
+    wifiCfg.powerSave = Wifi::PowerSave::kMinModem;
     wifiCfg.initNvs = true;
+    wifiCfg.connectTimeoutMs = 15000;
     Wifi wifi(wifiCfg);
 
     esp_err_t err = wifi.init();
@@ -48,15 +71,11 @@ static void gatewayTask(void* /*p_arg*/) {
         vTaskDelete(nullptr);
         return;
     }
-    err = wifi.start();
+
+    const Wifi::StaCredentials credentials = {kWifiSsid, kWifiPassword};
+    err = wifi.connect(credentials);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "wifi.start: %s", esp_err_to_name(err));
-        vTaskDelete(nullptr);
-        return;
-    }
-    err = wifi.setChannel(kChannel, WIFI_SECOND_CHAN_NONE);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "wifi.setChannel: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "wifi.connect: %s", esp_err_to_name(err));
         vTaskDelete(nullptr);
         return;
     }
@@ -65,6 +84,49 @@ static void gatewayTask(void* /*p_arg*/) {
     if (wifi.getMac(selfMac) == ESP_OK) {
         logMac("Self STA MAC", selfMac);
     }
+
+    err = wifi.syncTime(15000);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "syncTime: %s (TLS needs wall clock)", esp_err_to_name(err));
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    MQTT::Config mqttConfig;
+    mqttConfig.p_host = kBrokerHost;
+    mqttConfig.port = kBrokerPort;
+    mqttConfig.transport = MQTT::Transport::kSsl;
+    mqttConfig.protocol = MQTT::Protocol::kMqtt311;
+    mqttConfig.p_clientId = kDeviceID;
+    mqttConfig.p_caFile = kAwsServerCA;
+    mqttConfig.p_clientCertFile = kAwsClientCertificate;
+    mqttConfig.p_clientKeyFile = kAwsClientKey;
+    mqttConfig.p_spiffsBasePath = "/spiffs";
+    mqttConfig.cleanSession = true;
+    mqttConfig.publishAckTimeoutMs = kPublishAckMs;
+    mqttConfig.connectTimeoutMs = 20000;
+    mqttConfig.taskStackSize = MQTT::kMinTlsTaskStackBytes;
+
+    static MQTT s_mqtt;
+    err = s_mqtt.setConfig(mqttConfig);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "mqtt.setConfig: %s", esp_err_to_name(err));
+        vTaskDelete(nullptr);
+        return;
+    }
+    err = s_mqtt.init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "mqtt.init: %s", esp_err_to_name(err));
+        vTaskDelete(nullptr);
+        return;
+    }
+    err = s_mqtt.waitConnected(30000);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "mqtt.waitConnected: %s", esp_err_to_name(err));
+        vTaskDelete(nullptr);
+        return;
+    }
+    ESP_LOGI(TAG, "MQTT connected; forwarding ESP-NOW payloads to %s", kMqttDataTopic);
 
     FlashStorage store("espnow_gw");
     err = store.init();
@@ -101,12 +163,17 @@ static void gatewayTask(void* /*p_arg*/) {
         size_t len = 0;
         while (server.read(srcMac, payload, sizeof(payload), &len) == ESP_OK) {
             logMac("DATA from", srcMac);
-            ESP_LOGI(TAG, "payload %u bytes (v2 large-frame check)",
-                     static_cast<unsigned>(len));
             const size_t n = (len < kPrefixLogLen) ? len : kPrefixLogLen;
             std::memcpy(prefix, payload, n);
             prefix[n] = '\0';
-            ESP_LOGI(TAG, "prefix: %s", prefix);
+            ESP_LOGI(TAG, "payload %u bytes, prefix: %s", static_cast<unsigned>(len),
+                     prefix);
+
+            err = s_mqtt.publish(kMqttDataTopic, payload, len, MQTT::Qos::k1, false,
+                                  kPublishAckMs);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "mqtt.publish: %s", esp_err_to_name(err));
+            }
         }
 
         static bool loggedPairingEnd = false;
@@ -121,9 +188,9 @@ static void gatewayTask(void* /*p_arg*/) {
 }
 
 extern "C" void app_main(void) {
-    ESP_LOGI(TAG, "EspNowServer Sense example (v2)");
-    if (xTaskCreatePinnedToCore(gatewayTask, "espnow_gw", kTaskStack, nullptr,
-                                kTaskPrio, nullptr, tskNO_AFFINITY) != pdPASS) {
+    ESP_LOGI(TAG, "EspNowServer Sense example (v2 -> MQTT bridge)");
+    if (xTaskCreatePinnedToCore(gatewayTask, "espnow_gw", kAppTaskStackBytes, nullptr,
+                                kAppTaskPriority, nullptr, kAppTaskCore) != pdPASS) {
         ESP_LOGE(TAG, "task create failed");
     }
 }

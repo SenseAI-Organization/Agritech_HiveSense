@@ -1,27 +1,29 @@
-#include "sd_storage_sense.hpp"
+// #include "sd_storage_sense.hpp"
 
-static const char* TAG = "HIVE_FIRST_STEPS";
+// static const char* TAG = "HIVE_FIRST_STEPS";
 
-const char* userSSID = "SENSE DEV";
-const char* userPassword = "901798716SA";
+const char* kWifiSsid = "TP-Link_DDB22";
+const char* kWifiPassword = "733624492";
 
 
 // AWS IoT OTA Configuration
-const char* AWS_IOT_ENDPOINT = "a1jlp9p9jotm7z-ats.iot.us-east-2.amazonaws.com";
-const char* AWS_ServerCA = "AmazonCA1.pem";
-const char* AWS_ClientCertificate = "SenseS.pem";
-const char* AWS_ClientKey = "private.pem";
-const char* THINGNAME = "BeeSense_Device";
-const char* mqttCmdTopic = "cmd";
-const char* mqttUpdateTopic = "sense/dev/HIVEota/firmware";
-const char* mqttFeedbackTopic = "sense/dev/HIVEota/feedback";
-const char* mqttDataTopic = "sense/dev/HIVE";
-const char* deviceID = "HIVE_TEST";
+const char* kBrokerHost = "a1jlp9p9jotm7z-ats.iot.us-east-2.amazonaws.com";
+const char* kAwsServerCA = "AmazonCA1.pem";
+const char* kAwsClientCertificate = "SenseS.pem";
+const char* kAwsClientKey = "private.pem";
+const char* kThingName = "BeeSense_Device";
+const char* kMqttCmdTopic = "cmd";
+const char* kMqttUpdateTopic = "sense/dev/HIVEota/firmware";
+const char* kMqttFeedbackTopic = "sense/dev/HIVEota/feedback";
+const char* kMqttDataTopic = "sense/dev/HIVE";
+const char* kDeviceID = "HIVE_TEST";
+static constexpr const char* kTopicPub = "sense/demo/out";
+static constexpr const char* kTopicSub = "sense/demo/in";
 
-SD* sdCard = nullptr;              
-// std::string fileName = "testHive.txt";
-std::string dailyFilename;  
-std::string failedFilename;
+// SD* sdCard = nullptr;              
+// // std::string fileName = "testHive.txt";
+// std::string dailyFilename;  
+// std::string failedFilename;
 
 // GPIO configuration for SPI
 // constexpr gpio_num_t kCsPin = GPIO_NUM_39;
@@ -29,9 +31,9 @@ std::string failedFilename;
 // constexpr gpio_num_t kMosiPin = GPIO_NUM_35;
 // constexpr gpio_num_t kMisoPin = GPIO_NUM_37;
 //BRAIN ZHANA
-constexpr gpio_num_t kCsPin = GPIO_NUM_39;
-constexpr gpio_num_t kSclPin = GPIO_NUM_12;
-constexpr gpio_num_t kMosiPin = GPIO_NUM_11;
-constexpr gpio_num_t kMisoPin = GPIO_NUM_13;
-constexpr gpio_num_t kLedPin = GPIO_NUM_2; // Pin para el LED RGB del cerebro
+// constexpr gpio_num_t kCsPin = GPIO_NUM_39;
+// constexpr gpio_num_t kSclPin = GPIO_NUM_12;
+// constexpr gpio_num_t kMosiPin = GPIO_NUM_11;
+// constexpr gpio_num_t kMisoPin = GPIO_NUM_13;
+// constexpr gpio_num_t kLedPin = GPIO_NUM_2; // Pin para el LED RGB del cerebro
 
