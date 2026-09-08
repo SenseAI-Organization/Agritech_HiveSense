@@ -28,8 +28,10 @@ static const char* TAG = "espnow_gw";
 static constexpr size_t kPrefixLogLen = 64;
 static constexpr uint8_t kEspNowChannel = 1;
 static constexpr size_t kPublishQueueLen = 8;
-static constexpr uint32_t kPartialBatchTimeoutMs = 5U * 60U * 1000U; // 5 minutes
+static constexpr uint32_t kPartialBatchTimeoutMs = 1U * 60U * 1000U; // 1 minute
 static constexpr uint32_t kPublishAckMs = 5000;
+static constexpr uint8_t kMqttPublishRetries = 3;
+static constexpr uint32_t kMqttPublishRetryDelayMs = 1000;
 static constexpr uint16_t kBrokerPort = 8883;
 static constexpr uint32_t kSyncTimeTimeoutMs = 15000;
 static constexpr uint8_t kSyncTimeRetries = 3;
@@ -106,14 +108,28 @@ static esp_err_t publishBatch(Wifi& wifi, EspNow& espNow,
         }
         if (deliverErr == ESP_OK) {
             for (size_t index = 0; index < count; ++index) {
-                esp_err_t publishErr =
-                    mqtt.publish(kMqttDataTopic, p_messages[index].payload,
-                                 p_messages[index].len, MQTT::Qos::k1, false,
-                                 kPublishAckMs);
-                if (publishErr != ESP_OK) {
-                    ESP_LOGW(TAG, "MQTT publish %u: %s", static_cast<unsigned>(index),
+                esp_err_t publishErr = ESP_FAIL;
+                for (uint8_t attempt = 1; attempt <= kMqttPublishRetries; ++attempt) {
+                    publishErr = mqtt.publish(kMqttDataTopic, p_messages[index].payload,
+                                              p_messages[index].len, MQTT::Qos::k1, false,
+                                              kPublishAckMs);
+                    if (publishErr == ESP_OK) {
+                        ESP_LOGI(TAG, "MQTT publish %u/%u acknowledged",
+                                 static_cast<unsigned>(index + 1U),
+                                 static_cast<unsigned>(count));
+                        break;
+                    }
+                    ESP_LOGW(TAG, "MQTT publish %u/%u attempt %u/%u: %s",
+                             static_cast<unsigned>(index + 1U),
+                             static_cast<unsigned>(count), static_cast<unsigned>(attempt),
+                             static_cast<unsigned>(kMqttPublishRetries),
                              esp_err_to_name(publishErr));
-                    deliverErr = publishErr;  // keep the whole batch queued for retry
+                    if (attempt < kMqttPublishRetries) {
+                        vTaskDelay(pdMS_TO_TICKS(kMqttPublishRetryDelayMs));
+                    }
+                }
+                if (publishErr != ESP_OK) {
+                    deliverErr = publishErr;
                 }
             }
         } else {
