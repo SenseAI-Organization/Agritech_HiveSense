@@ -1,4 +1,5 @@
 // #include "sd_storage_sense.hpp"
+#include "driver/gpio.h"
 
 // static const char* TAG = "HIVE_FIRST_STEPS";
 
@@ -35,6 +36,8 @@ static constexpr uint32_t kMqttConnectTimeoutMs = 30000;
 static constexpr uint32_t kBatchRetryDelayMs = 5000;
 static constexpr uint32_t kWakeWatchdogTimeoutMs = 10U * 60U * 1000U; // 10 minutes
 static constexpr uint32_t kNoDataTimeoutMs = 1U * 60U * 1000U; // 1 minute
+static constexpr gpio_num_t kBootPulsePin = GPIO_NUM_38;
+static constexpr uint32_t kBootPulseDurationMs = 1000;
 static constexpr uint32_t kAppTaskStackBytes = 8192;
 static constexpr UBaseType_t kAppTaskPriority = 5;
 static constexpr BaseType_t kAppTaskCore = tskNO_AFFINITY;

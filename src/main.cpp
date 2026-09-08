@@ -250,6 +250,12 @@ static void gatewayTask(void* /*p_arg*/) {
 }
 
 extern "C" void app_main(void) {
+    gpio_reset_pin(kBootPulsePin);
+    gpio_set_direction(kBootPulsePin, GPIO_MODE_OUTPUT);
+    gpio_set_level(kBootPulsePin, 1);
+    vTaskDelay(pdMS_TO_TICKS(kBootPulseDurationMs));
+    gpio_set_level(kBootPulsePin, 0);
+
     ESP_LOGI(TAG, "ESP-NOW channel 1 gateway (batch MQTT bridge)");
     if (xTaskCreatePinnedToCore(gatewayTask, "espnow_gw", kAppTaskStackBytes, nullptr,
                                  kAppTaskPriority, nullptr, kAppTaskCore) != pdPASS) {
