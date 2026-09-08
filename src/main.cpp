@@ -28,6 +28,7 @@ static const char* TAG = "espnow_gw";
 static constexpr size_t kPrefixLogLen = 64;
 static constexpr uint8_t kEspNowChannel = 1;
 static constexpr size_t kPublishQueueLen = 8;
+static constexpr uint32_t kPartialBatchTimeoutMs = 5U * 60U * 1000U; // 5 minutes
 static constexpr uint32_t kPublishAckMs = 5000;
 static constexpr uint16_t kBrokerPort = 8883;
 static constexpr uint32_t kSyncTimeTimeoutMs = 15000;
@@ -176,6 +177,7 @@ static void gatewayTask(void* /*p_arg*/) {
     }
 
     size_t queuedCount = 0;
+    TickType_t lastReceiveTicks = 0;
     uint8_t srcMac[EspNow::kMacLen];
     char prefix[kPrefixLogLen + 1];
 
@@ -192,6 +194,7 @@ static void gatewayTask(void* /*p_arg*/) {
                      static_cast<unsigned>(message.len), prefix);
 
             s_publishQueue[queuedCount++] = message;
+            lastReceiveTicks = xTaskGetTickCount();
             if (espNow.addPeer(srcMac) == ESP_OK) {
                 err = espNow.send(srcMac, kAckMessage, sizeof(kAckMessage) - 1U);
                 if (err != ESP_OK) {
@@ -201,11 +204,19 @@ static void gatewayTask(void* /*p_arg*/) {
             }
         }
 
-        if (queuedCount == kPublishQueueLen) {
-            ESP_LOGI(TAG, "Queue full; publishing %u messages", static_cast<unsigned>(queuedCount));
+        const bool queueFull = queuedCount == kPublishQueueLen;
+        const bool partialBatchTimedOut =
+            queuedCount > 0U &&
+            (xTaskGetTickCount() - lastReceiveTicks >=
+             pdMS_TO_TICKS(kPartialBatchTimeoutMs));
+        if (queueFull || partialBatchTimedOut) {
+            ESP_LOGI(TAG, "%s; publishing %u messages",
+                     queueFull ? "Queue full" : "10-minute receive timeout",
+                     static_cast<unsigned>(queuedCount));
             err = publishBatch(wifi, espNow, s_publishQueue, queuedCount);
             if (err == ESP_OK) {
                 queuedCount = 0;
+                lastReceiveTicks = 0;
             } else {
                 // Delivery failed (Wi-Fi/NTP/MQTT) - keep the batch queued and
                 // retry next loop instead of silently losing 8 readings. New
