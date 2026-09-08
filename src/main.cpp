@@ -31,7 +31,9 @@ static constexpr size_t kPublishQueueLen = 8;
 static constexpr uint32_t kPublishAckMs = 5000;
 static constexpr uint16_t kBrokerPort = 8883;
 static constexpr uint32_t kSyncTimeTimeoutMs = 15000;
+static constexpr uint8_t kSyncTimeRetries = 3;
 static constexpr uint32_t kMqttConnectTimeoutMs = 30000;
+static constexpr uint32_t kBatchRetryDelayMs = 5000;
 static constexpr uint32_t kAppTaskStackBytes = 8192;
 static constexpr UBaseType_t kAppTaskPriority = 5;
 static constexpr BaseType_t kAppTaskCore = tskNO_AFFINITY;
@@ -50,6 +52,10 @@ static void logMac(const char* p_label, const uint8_t* p_mac) {
              p_mac[2], p_mac[3], p_mac[4], p_mac[5]);
 }
 
+// Returns the delivery result (ESP_OK only if every message published), not
+// the ESP-NOW-restore result - the caller decides whether to clear the queue
+// based on delivery, and a restore failure is logged here regardless since
+// it means the device can no longer receive ESP-NOW at all.
 static esp_err_t publishBatch(Wifi& wifi, EspNow& espNow,
                               const EspNowMessage* p_messages, size_t count) {
     esp_err_t err = espNow.deinit();
@@ -58,12 +64,24 @@ static esp_err_t publishBatch(Wifi& wifi, EspNow& espNow,
     }
 
     const Wifi::StaCredentials credentials = {kWifiSsid, kWifiPassword};
-    err = wifi.connect(credentials, kSyncTimeTimeoutMs);
-    if (err == ESP_OK) {
-        err = wifi.syncTime(kSyncTimeTimeoutMs);
+    esp_err_t deliverErr = wifi.connect(credentials, kSyncTimeTimeoutMs);
+    if (deliverErr == ESP_OK) {
+        // First SNTP round trip after a fresh connect can miss a single 15s
+        // window (DNS lookup + first packet loss); retry before giving up.
+        deliverErr = ESP_FAIL;
+        for (uint8_t attempt = 1; attempt <= kSyncTimeRetries; ++attempt) {
+            deliverErr = wifi.syncTime(kSyncTimeTimeoutMs);
+            if (deliverErr == ESP_OK) {
+                break;
+            }
+            ESP_LOGW(TAG, "syncTime attempt %u/%u: %s", attempt, kSyncTimeRetries,
+                     esp_err_to_name(deliverErr));
+        }
     }
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Wi-Fi/time sync: %s", esp_err_to_name(err));
+
+    if (deliverErr != ESP_OK) {
+        ESP_LOGE(TAG, "Wi-Fi/time sync failed after retries: %s",
+                 esp_err_to_name(deliverErr));
     } else {
         MQTT::Config mqttConfig;
         mqttConfig.p_host = kBrokerHost;
@@ -81,29 +99,39 @@ static esp_err_t publishBatch(Wifi& wifi, EspNow& espNow,
         mqttConfig.taskStackSize = MQTT::kMinTlsTaskStackBytes;
 
         MQTT mqtt(mqttConfig);
-        err = mqtt.init();
-        if (err == ESP_OK) {
-            err = mqtt.waitConnected(kMqttConnectTimeoutMs);
+        deliverErr = mqtt.init();
+        if (deliverErr == ESP_OK) {
+            deliverErr = mqtt.waitConnected(kMqttConnectTimeoutMs);
         }
-        if (err == ESP_OK) {
+        if (deliverErr == ESP_OK) {
             for (size_t index = 0; index < count; ++index) {
-                err = mqtt.publish(kMqttDataTopic, p_messages[index].payload,
-                                   p_messages[index].len, MQTT::Qos::k1, false,
-                                   kPublishAckMs);
-                if (err != ESP_OK) {
+                esp_err_t publishErr =
+                    mqtt.publish(kMqttDataTopic, p_messages[index].payload,
+                                 p_messages[index].len, MQTT::Qos::k1, false,
+                                 kPublishAckMs);
+                if (publishErr != ESP_OK) {
                     ESP_LOGW(TAG, "MQTT publish %u: %s", static_cast<unsigned>(index),
-                             esp_err_to_name(err));
+                             esp_err_to_name(publishErr));
+                    deliverErr = publishErr;  // keep the whole batch queued for retry
                 }
             }
         } else {
-            ESP_LOGE(TAG, "MQTT connect: %s", esp_err_to_name(err));
+            ESP_LOGE(TAG, "MQTT connect: %s", esp_err_to_name(deliverErr));
         }
         (void)mqtt.deinit();
     }
 
     (void)wifi.disconnect();
-    err = wifi.setChannel(kEspNowChannel, WIFI_SECOND_CHAN_NONE);
-    return (err == ESP_OK) ? espNow.init() : err;
+    esp_err_t restoreErr = wifi.setChannel(kEspNowChannel, WIFI_SECOND_CHAN_NONE);
+    if (restoreErr == ESP_OK) {
+        restoreErr = espNow.init();
+    }
+    if (restoreErr != ESP_OK) {
+        ESP_LOGE(TAG, "ESP-NOW restore failed, gateway cannot receive: %s",
+                 esp_err_to_name(restoreErr));
+    }
+
+    return deliverErr;
 }
 
 static void gatewayTask(void* /*p_arg*/) {
@@ -176,10 +204,17 @@ static void gatewayTask(void* /*p_arg*/) {
         if (queuedCount == kPublishQueueLen) {
             ESP_LOGI(TAG, "Queue full; publishing %u messages", static_cast<unsigned>(queuedCount));
             err = publishBatch(wifi, espNow, s_publishQueue, queuedCount);
-            if (err != ESP_OK) {
-                ESP_LOGE(TAG, "ESP-NOW restore: %s", esp_err_to_name(err));
+            if (err == ESP_OK) {
+                queuedCount = 0;
+            } else {
+                // Delivery failed (Wi-Fi/NTP/MQTT) - keep the batch queued and
+                // retry next loop instead of silently losing 8 readings. New
+                // ESP-NOW packets are held off (queuedCount stays maxed) until
+                // this batch gets out; senders retry until they see the ACK.
+                ESP_LOGW(TAG, "Batch publish failed (%s); keeping %u messages queued for retry",
+                         esp_err_to_name(err), static_cast<unsigned>(queuedCount));
+                vTaskDelay(pdMS_TO_TICKS(kBatchRetryDelayMs));
             }
-            queuedCount = 0;
         }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
