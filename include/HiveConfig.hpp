@@ -3,8 +3,8 @@
 
 // static const char* TAG = "HIVE_FIRST_STEPS";
 
-const char* kWifiSsid = "TP-Link_DDB22";
-const char* kWifiPassword = "733624492";
+const char* kWifiSsid = "DejandoHuella";
+const char* kWifiPassword = "DHFERTILIDAD2017";
 
 
 // AWS IoT OTA Configuration
@@ -16,7 +16,7 @@ const char* kThingName = "BeeSense_Device";
 const char* kMqttCmdTopic = "cmd";
 const char* kMqttUpdateTopic = "sense/dev/HIVEota/firmware";
 const char* kMqttFeedbackTopic = "sense/dev/HIVEota/feedback";
-const char* kMqttDataTopic = "sense/dev/HIVE";
+const char* kMqttDataTopic = "sense/3sense/telemetry";
 const char* kDeviceID = "HIVE_TEST";
 static constexpr const char* kTopicPub = "sense/demo/out";
 static constexpr const char* kTopicSub = "sense/demo/in";
