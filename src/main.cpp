@@ -15,6 +15,7 @@
 #include <cstring>
 
 #include "esp_log.h"
+#include "esp_system.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -184,6 +185,7 @@ static void gatewayTask(void* /*p_arg*/) {
 
     size_t queuedCount = 0;
     TickType_t lastReceiveTicks = 0;
+    TickType_t lastAnyPacketTicks = xTaskGetTickCount();
     uint8_t srcMac[EspNow::kMacLen];
     char prefix[kPrefixLogLen + 1];
 
@@ -203,6 +205,7 @@ static void gatewayTask(void* /*p_arg*/) {
 
             s_publishQueue[queuedCount++] = message;
             lastReceiveTicks = xTaskGetTickCount();
+            lastAnyPacketTicks = lastReceiveTicks;
             wake_watchdog::feed();
             if (espNow.addPeer(srcMac) == ESP_OK) {
                 err = espNow.send(srcMac, kAckMessage, sizeof(kAckMessage) - 1U);
@@ -227,15 +230,20 @@ static void gatewayTask(void* /*p_arg*/) {
                 queuedCount = 0;
                 lastReceiveTicks = 0;
             } else {
-                // Delivery failed (Wi-Fi/NTP/MQTT) - keep the batch queued and
-                // retry next loop instead of silently losing 8 readings. New
-                // ESP-NOW packets are held off (queuedCount stays maxed) until
-                // this batch gets out; senders retry until they see the ACK.
+
                 ESP_LOGW(TAG, "Batch publish failed (%s); keeping %u messages queued for retry",
                          esp_err_to_name(err), static_cast<unsigned>(queuedCount));
                 vTaskDelay(pdMS_TO_TICKS(kBatchRetryDelayMs));
             }
         }
+
+        if (xTaskGetTickCount() - lastAnyPacketTicks >= pdMS_TO_TICKS(kNoDataTimeoutMs)) {
+
+            ESP_LOGE(TAG, "No ESP-NOW data for %lu ms - restarting",
+                     (unsigned long)kNoDataTimeoutMs);
+            esp_restart();
+        }
+
         wake_watchdog::feed();
         vTaskDelay(pdMS_TO_TICKS(10));
     }
