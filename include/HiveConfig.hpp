@@ -20,20 +20,22 @@ const char* kDeviceID = "HIVE_TEST";
 static constexpr const char* kTopicPub = "sense/demo/out";
 static constexpr const char* kTopicSub = "sense/demo/in";
 
-// SD* sdCard = nullptr;              
-// // std::string fileName = "testHive.txt";
-// std::string dailyFilename;  
-// std::string failedFilename;
 
-// GPIO configuration for SPI
-// constexpr gpio_num_t kCsPin = GPIO_NUM_39;
-// constexpr gpio_num_t kSclPin = GPIO_NUM_36;
-// constexpr gpio_num_t kMosiPin = GPIO_NUM_35;
-// constexpr gpio_num_t kMisoPin = GPIO_NUM_37;
-//BRAIN ZHANA
-// constexpr gpio_num_t kCsPin = GPIO_NUM_39;
-// constexpr gpio_num_t kSclPin = GPIO_NUM_12;
-// constexpr gpio_num_t kMosiPin = GPIO_NUM_11;
-// constexpr gpio_num_t kMisoPin = GPIO_NUM_13;
-// constexpr gpio_num_t kLedPin = GPIO_NUM_2; // Pin para el LED RGB del cerebro
+static constexpr size_t kPrefixLogLen = 64;
+static constexpr uint8_t kEspNowChannel = 1;
+static constexpr size_t kPublishQueueLen = 8;
+static constexpr uint32_t kPartialBatchTimeoutMs = 1U * 60U * 1000U; // 1 minute
+static constexpr uint32_t kPublishAckMs = 5000;
+static constexpr uint8_t kMqttPublishRetries = 3;
+static constexpr uint32_t kMqttPublishRetryDelayMs = 1000;
+static constexpr uint16_t kBrokerPort = 8883;
+static constexpr uint32_t kSyncTimeTimeoutMs = 15000;
+static constexpr uint8_t kSyncTimeRetries = 3;
+static constexpr uint32_t kMqttConnectTimeoutMs = 30000;
+static constexpr uint32_t kBatchRetryDelayMs = 5000;
+static constexpr uint32_t kWakeWatchdogTimeoutMs = 3U * 60U * 1000U; // 3 minutes
+static constexpr uint32_t kAppTaskStackBytes = 8192;
+static constexpr UBaseType_t kAppTaskPriority = 5;
+static constexpr BaseType_t kAppTaskCore = tskNO_AFFINITY;
 
+static const uint8_t kAckMessage[] = "ACK";

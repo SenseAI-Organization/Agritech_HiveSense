@@ -21,27 +21,10 @@
 #include "espnow_sense.hpp"
 #include "mqtt_sense.hpp"
 #include "wifi_sense.hpp"
+#include "wake_watchdog.hpp"
 #include "HiveConfig.hpp"
 
 static const char* TAG = "espnow_gw";
-
-static constexpr size_t kPrefixLogLen = 64;
-static constexpr uint8_t kEspNowChannel = 1;
-static constexpr size_t kPublishQueueLen = 8;
-static constexpr uint32_t kPartialBatchTimeoutMs = 1U * 60U * 1000U; // 1 minute
-static constexpr uint32_t kPublishAckMs = 5000;
-static constexpr uint8_t kMqttPublishRetries = 3;
-static constexpr uint32_t kMqttPublishRetryDelayMs = 1000;
-static constexpr uint16_t kBrokerPort = 8883;
-static constexpr uint32_t kSyncTimeTimeoutMs = 15000;
-static constexpr uint8_t kSyncTimeRetries = 3;
-static constexpr uint32_t kMqttConnectTimeoutMs = 30000;
-static constexpr uint32_t kBatchRetryDelayMs = 5000;
-static constexpr uint32_t kAppTaskStackBytes = 8192;
-static constexpr UBaseType_t kAppTaskPriority = 5;
-static constexpr BaseType_t kAppTaskCore = tskNO_AFFINITY;
-
-static const uint8_t kAckMessage[] = "ACK";
 
 struct EspNowMessage {
     uint8_t payload[EspNow::kMaxPayloadV2];
@@ -62,18 +45,21 @@ static void logMac(const char* p_label, const uint8_t* p_mac) {
 static esp_err_t publishBatch(Wifi& wifi, EspNow& espNow,
                               const EspNowMessage* p_messages, size_t count) {
     esp_err_t err = espNow.deinit();
+    wake_watchdog::feed();
     if (err != ESP_OK) {
         return err;
     }
 
     const Wifi::StaCredentials credentials = {kWifiSsid, kWifiPassword};
     esp_err_t deliverErr = wifi.connect(credentials, kSyncTimeTimeoutMs);
+    wake_watchdog::feed();
     if (deliverErr == ESP_OK) {
         // First SNTP round trip after a fresh connect can miss a single 15s
         // window (DNS lookup + first packet loss); retry before giving up.
         deliverErr = ESP_FAIL;
         for (uint8_t attempt = 1; attempt <= kSyncTimeRetries; ++attempt) {
             deliverErr = wifi.syncTime(kSyncTimeTimeoutMs);
+            wake_watchdog::feed();
             if (deliverErr == ESP_OK) {
                 break;
             }
@@ -103,8 +89,10 @@ static esp_err_t publishBatch(Wifi& wifi, EspNow& espNow,
 
         MQTT mqtt(mqttConfig);
         deliverErr = mqtt.init();
+        wake_watchdog::feed();
         if (deliverErr == ESP_OK) {
             deliverErr = mqtt.waitConnected(kMqttConnectTimeoutMs);
+            wake_watchdog::feed();
         }
         if (deliverErr == ESP_OK) {
             for (size_t index = 0; index < count; ++index) {
@@ -113,6 +101,7 @@ static esp_err_t publishBatch(Wifi& wifi, EspNow& espNow,
                     publishErr = mqtt.publish(kMqttDataTopic, p_messages[index].payload,
                                               p_messages[index].len, MQTT::Qos::k1, false,
                                               kPublishAckMs);
+                    wake_watchdog::feed();
                     if (publishErr == ESP_OK) {
                         ESP_LOGI(TAG, "MQTT publish %u/%u acknowledged",
                                  static_cast<unsigned>(index + 1U),
@@ -143,6 +132,7 @@ static esp_err_t publishBatch(Wifi& wifi, EspNow& espNow,
     if (restoreErr == ESP_OK) {
         restoreErr = espNow.init();
     }
+    wake_watchdog::feed();
     if (restoreErr != ESP_OK) {
         ESP_LOGE(TAG, "ESP-NOW restore failed, gateway cannot receive: %s",
                  esp_err_to_name(restoreErr));
@@ -197,6 +187,8 @@ static void gatewayTask(void* /*p_arg*/) {
     uint8_t srcMac[EspNow::kMacLen];
     char prefix[kPrefixLogLen + 1];
 
+    wake_watchdog::arm(kWakeWatchdogTimeoutMs);
+
     while (true) {
         EspNowMessage message = {};
         while (queuedCount < kPublishQueueLen &&
@@ -211,6 +203,7 @@ static void gatewayTask(void* /*p_arg*/) {
 
             s_publishQueue[queuedCount++] = message;
             lastReceiveTicks = xTaskGetTickCount();
+            wake_watchdog::feed();
             if (espNow.addPeer(srcMac) == ESP_OK) {
                 err = espNow.send(srcMac, kAckMessage, sizeof(kAckMessage) - 1U);
                 if (err != ESP_OK) {
@@ -243,6 +236,7 @@ static void gatewayTask(void* /*p_arg*/) {
                 vTaskDelay(pdMS_TO_TICKS(kBatchRetryDelayMs));
             }
         }
+        wake_watchdog::feed();
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
